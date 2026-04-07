@@ -33,6 +33,7 @@
 #define DELAY_TIME K_MSEC(500)
 
 static bool strip_on_off[STRIP_NUM_PIXELS];
+static uint8_t strip_brightness[STRIP_NUM_PIXELS];
 static struct led_rgb pixels[STRIP_NUM_PIXELS];
 static struct led_rgb real_pixels[STRIP_NUM_PIXELS];
 
@@ -63,12 +64,6 @@ static struct k_work delay_work;
 
 static int led_update_rgb(void);
 
-enum{
-	LED_OFF		= 0,
-	LED_ON 		= 1,
-	LED_TOGGLE	= 2
-};
-
 int gl_led_strip_init(void)
 {
 	if (device_is_ready(strip)) {
@@ -81,7 +76,8 @@ int gl_led_strip_init(void)
 	for(int i = 0; i < STRIP_NUM_PIXELS; i++)
 	{
 		strip_on_off[i] = false;
-		memcpy(&pixels[i], &def_off, sizeof(struct led_rgb));
+		strip_brightness[i] = 255;
+		memcpy(&pixels[i], &def_on, sizeof(struct led_rgb));
 	}
 
 	int rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
@@ -101,23 +97,15 @@ static int led_update_rgb(void)
 {
 	for(int i = 0; i < STRIP_NUM_PIXELS; i++)
 	{
-		memcpy(&real_pixels[i], &pixels[i], sizeof(struct led_rgb));
 		if(strip_on_off[i])
 		{
-			// Set to white when the original value is off, but currently needs to be turned on.
-			// This only occurs when first set on.
-			if(0 == memcmp(&real_pixels[i], &def_off, sizeof(struct led_rgb)))
-			{
-				memcpy(&pixels[i], &def_on, sizeof(struct led_rgb));
-				memcpy(&real_pixels[i], &def_on, sizeof(struct led_rgb));
-			}
-		}else{
-			// When the original value is on but currently needs to be turned off, set to off, 
-			// but save the previously set color.
-			if(0 != memcmp(&real_pixels[i], &def_off, sizeof(struct led_rgb)))
-			{
-				memcpy(&real_pixels[i], &def_off, sizeof(struct led_rgb));
-			}
+			real_pixels[i].r = (uint8_t)(((uint32_t)pixels[i].r * strip_brightness[i]) / 255);
+			real_pixels[i].g = (uint8_t)(((uint32_t)pixels[i].g * strip_brightness[i]) / 255);
+			real_pixels[i].b = (uint8_t)(((uint32_t)pixels[i].b * strip_brightness[i]) / 255);
+		}
+		else
+		{
+			memcpy(&real_pixels[i], &def_off, sizeof(struct led_rgb));
 		}
 	}
 
@@ -167,9 +155,6 @@ int update_led_strip_rgb(uint16_t node, struct led_rgb* color)
 		}
 	} else {
 		memcpy(&pixels[(node - 1)], color, sizeof(struct led_rgb));
-		if (false == strip_on_off[(node - 1)]) {
-			return -3;
-		}
 	}
 
 	return led_update_rgb();
@@ -252,26 +237,39 @@ static void led_delay_work(struct k_work *item)
 	on_off_led_strip(delay_node, delay_on_off);
 }
 
-int get_led_strip_status(uint16_t node, int* on_off, struct led_rgb* color)
+int get_led_strip_status(uint16_t node, int* on_off, struct led_rgb* color, uint8_t* brightness)
 {
 	if ((node > STRIP_NUM_PIXELS) || (node == ALL_LED_NODE)) {
 		printk("node is not exist!\n");
 		return -1;
 	}
 
-	if(strip_on_off[(node - 1)] == true)
-	{
-		*on_off = 1;
-	}else{
-		*on_off = 0;
-	}
-
+	*on_off = strip_on_off[(node - 1)] ? 1 : 0;
 	memcpy(color, &pixels[(node - 1)], sizeof(struct led_rgb));
+	*brightness = strip_brightness[(node - 1)];
 
 	return 0;
 }
 
 
+
+int set_led_strip_brightness(uint16_t node, uint8_t brightness)
+{
+	if (node > STRIP_NUM_PIXELS) {
+		printk("node is not exist!\n");
+		return -1;
+	}
+
+	if (node == ALL_LED_NODE) {
+		for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
+			strip_brightness[i] = brightness;
+		}
+	} else {
+		strip_brightness[node - 1] = brightness;
+	}
+
+	return led_update_rgb();
+}
 
 /* Automatic continuous color change */
 void test_led_strip_1(void)

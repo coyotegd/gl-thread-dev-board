@@ -26,6 +26,10 @@
 #define LED_STRIP_NODE_1    0x1
 #define LED_STRIP_NODE_2    0x2
 
+#define LED_OFF    0
+#define LED_ON     1
+#define LED_TOGGLE 2
+
 #define RGB(_r, _g, _b)                                                                   \
 	{                                                                                     \
 		.r = (_r), .g = (_g), .b = (_b)                                                   \
@@ -43,7 +47,9 @@ int on_off_led_strip(uint16_t node, int on_off);
 
 int on_off_led_strip_with_delay(uint16_t node, int on_off, uint16_t delay_ms);
 
-int get_led_strip_status(uint16_t node, int* on_off, struct led_rgb* color);
+int get_led_strip_status(uint16_t node, int* on_off, struct led_rgb* color, uint8_t* brightness);
+
+int set_led_strip_brightness(uint16_t node, uint8_t brightness);
 
 void test_led_strip_1(void);
 void test_led_strip_2(void);

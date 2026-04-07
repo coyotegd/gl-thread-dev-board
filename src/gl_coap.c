@@ -64,6 +64,7 @@ struct _cmd_s {
 	{ CONFIG_CMD_GET_LED_STATUS, "get_led_status" },
 	{ CONFIG_CMD_SET_REPORT_INTERVAL, "set_report_interval" },
 	{ CONFIG_CMD_SET_OT_MODE, "set_ot_mode"},
+	{ CONFIG_CMD_SET_LEVEL, "set_level"},
 };
 
 struct _obj_s {
@@ -920,20 +921,24 @@ static int cmd_request(const char *json_str, cJSON* resp_obj)
 		cJSON *array_obj = cJSON_CreateArray();
 		int on_off;
 		struct led_rgb color;
-		for(size_t i = 1; i < 3; i++)
+		uint8_t brightness;
+		for(int i = 1; i < ARRAY_SIZE(g_led_obj); i++)
 		{
+			uint16_t node = (uint16_t)g_led_obj[i].id;
 			cJSON *item_obj = cJSON_CreateObject();
-			if(0 != get_led_strip_status(LED_STRIP_NODE_1, &on_off, &color))
+			if(0 != get_led_strip_status(node, &on_off, &color, &brightness))
 			{
 				LOG_ERR("get_led_strip_status ERROR");
 				ret = ERROR_CODE_UNKNOW;
+				cJSON_Delete(item_obj);
 				goto out;
 			}
-			cJSON_AddStringToObjectCS(item_obj, "obj", "led_left");
+			cJSON_AddStringToObjectCS(item_obj, "obj", g_led_obj[i].obj);
 			cJSON_AddNumberToObjectCS(item_obj, "on_off", on_off);
 			cJSON_AddNumberToObjectCS(item_obj, "r", color.r);
 			cJSON_AddNumberToObjectCS(item_obj, "g", color.g);
 			cJSON_AddNumberToObjectCS(item_obj, "b", color.b);
+			cJSON_AddNumberToObjectCS(item_obj, "brightness", brightness);
 			cJSON_AddItemToArray(array_obj, item_obj);
 		}
 		cJSON_AddItemToObjectCS(resp_obj, "led_strip_status", array_obj);
@@ -993,6 +998,25 @@ static int cmd_request(const char *json_str, cJSON* resp_obj)
 			ret = ERROR_CODE_UNKNOW;
 		}
 	}break;
+	case CONFIG_CMD_SET_LEVEL: {
+		obj = gl_json_get_string(root_obj, "obj");
+		uint16_t led_node = ALL_LED_NODE;
+		if (obj != NULL) {
+			for (int i = 0; i < ARRAY_SIZE(g_led_obj); i++) {
+				if (0 == strcmp(g_led_obj[i].obj, obj)) {
+					led_node = (uint16_t)g_led_obj[i].id;
+					break;
+				}
+			}
+		}
+		int val = gl_json_get_int(root_obj, "val");
+		if (val < 0) val = 0;
+		if (val > 255) val = 255;
+		if (0 != set_led_strip_brightness(led_node, (uint8_t)val)) {
+			LOG_ERR("set_led_strip_brightness ERROR");
+			ret = ERROR_CODE_UNKNOW;
+		}
+	} break;
 	case CONFIG_CMD_UPGRADE:
 	case CONFIG_CMD_FACTORYRESET:
 	case CONFIG_CMD_REBOOT:
