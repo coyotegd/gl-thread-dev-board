@@ -135,11 +135,11 @@ static int hx3203_sample_fetch(const struct device *dev, enum sensor_channel cha
 
 	if (chan == SENSOR_CHAN_ALL || chan == SENSOR_CHAN_LIGHT) {
 		data->light = 0;
-		int16_t temp_data = 0;
+		int32_t temp_data = 0;
 		uint8_t databuf[3];
 		uint32_t ch0_data = 0;
 		uint32_t ch1_data = 0;
-		uint16_t als_max = 0;
+		uint32_t als_max = 0;
 		ret = hx3203_read(dev, 0x80, &databuf[0]);
 		if (ret < 0) {
 			LOG_ERR("Could not fetch ambient light");
@@ -178,7 +178,7 @@ static int hx3203_sample_fetch(const struct device *dev, enum sensor_channel cha
 		}
 		ch1_data = ((databuf[0] << 3) | ((databuf[1] & 0x3F) << 11) | (databuf[2] & 0x07));
 
-		temp_data = ch0_data - als_max - (ch1_data * 145 / 100);
+		temp_data = (int32_t)ch0_data - (int32_t)als_max - (int32_t)(ch1_data * 145 / 100);
 		if ((ch0_data > 16380) || (ch1_data > 16380)) {
 			temp_data = 16384;
 		}

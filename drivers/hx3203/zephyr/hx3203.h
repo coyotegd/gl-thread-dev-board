@@ -60,7 +60,7 @@ struct hx3203_config {
 
 struct hx3203_data {
 	struct k_sem sem;
-	uint16_t light;
+	uint32_t light;
 };
 
 
