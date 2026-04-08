@@ -21,14 +21,11 @@
 #define _GL_LED_STRIP_H_
 
 #include <zephyr/drivers/led_strip.h>
+#include "../led/gl_led.h"
 
 #define ALL_LED_NODE        0x0
 #define LED_STRIP_NODE_1    0x1
 #define LED_STRIP_NODE_2    0x2
-
-#define LED_OFF    0
-#define LED_ON     1
-#define LED_TOGGLE 2
 
 #define RGB(_r, _g, _b)                                                                   \
 	{                                                                                     \
