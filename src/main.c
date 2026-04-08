@@ -240,13 +240,15 @@ static void led_encoder_apply(struct k_work *item)
 		struct led_rgb color = { .r = r, .g = g, .b = b };
 		update_led_strip_rgb(node, &color);
 	} else {
-		/* one full rotation (360°) = full brightness range 1-255 */
-		int32_t delta   = steps * 254 / 360;
+		/* one full rotation (360°) = full brightness range 0-255 */
+		int32_t delta   = steps * 255 / 360;
 		int32_t new_bri = (int32_t)led_bri[led_idx] + delta;
-		if (new_bri < 1)   { new_bri = 1; }
+		if (new_bri < 0)   { new_bri = 0; }
 		if (new_bri > 255) { new_bri = 255; }
 		led_bri[led_idx] = (uint8_t)new_bri;
 		set_led_strip_brightness(node, led_bri[led_idx]);
+		on_off_led_strip(node, led_bri[led_idx] == 0 ? LED_OFF : LED_ON);
+		return;
 	}
 
 	on_off_led_strip(node, LED_ON);
@@ -270,7 +272,7 @@ void encoder_callback(const struct device *dev, const struct sensor_trigger *tri
 	if (encoder_mode == 1 || encoder_mode == 3) {
 		uint8_t idx = (encoder_mode == 1) ? 0 : 1;
 		if (led_bri[idx] >= 255 && led_pending_steps > 0) { led_pending_steps = 0; }
-		if (led_bri[idx] <= 1   && led_pending_steps < 0) { led_pending_steps = 0; }
+		if (led_bri[idx] == 0   && led_pending_steps < 0) { led_pending_steps = 0; }
 	}
 	irq_unlock(key);
 
