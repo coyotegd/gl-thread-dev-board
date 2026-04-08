@@ -80,7 +80,9 @@ int gl_led_strip_init(void)
 		memcpy(&pixels[i], &def_on, sizeof(struct led_rgb));
 	}
 
-	int rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+	/* Use led_update_rgb() so strip_on_off[] (all false) is respected:
+	 * hardware sees black at boot, stored colors stay white. */
+	int rc = led_update_rgb();
 	if (rc) {
 		printk("couldn't update strip: %d\n", rc);
 		return -2;

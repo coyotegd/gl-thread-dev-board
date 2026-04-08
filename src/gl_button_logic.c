@@ -39,6 +39,7 @@ const struct gpio_dt_spec SW1 = GPIO_DT_SPEC_GET_OR(SW0_NODE, gpios, { 0 });
 const struct gpio_dt_spec SW2 = GPIO_DT_SPEC_GET_OR(SW1_NODE, gpios, { 0 });
 
 extern int joiner_state;
+extern void encoder_mode_cycle(void);
 uint32_t join_time_start;
 
 
@@ -116,7 +117,7 @@ void on_button_changed(uint32_t button_state, uint32_t has_changed)
 
 	} else if (buttons & DK_BTN4_MSK) {
 		printk("Button4 Press\n");
-
+		encoder_mode_cycle();
 		send_trigger_event_request(QDEC_BUTTON_TRIGGER, "qdec_0", "trigger");
 	}
 }

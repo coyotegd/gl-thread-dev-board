@@ -120,6 +120,38 @@ static volatile bool    qdec_send_pending = false;
 
 #define QDEC_IDLE_MS 1000
 
+/* ── Encoder LED mode state ─────────────────────────────────────────────
+ * encoder_mode cycles on each button press of the rotary encoder:
+ *   0 = LED1 hue       1 = LED1 brightness
+ *   2 = LED2 hue       3 = LED2 brightness
+ *
+ * QDEC returns degrees; steps=60 in DTS means one full rotation = 360°.
+ * Hue  : hue_deg += sv.val1  →  360° sweep = full rainbow in one turn.
+ * Brightness: delta = sv.val1 * 254 / 360  →  360° = full 1-255 range.
+ * ────────────────────────────────────────────────────────────────────── */
+static uint8_t          encoder_mode      = 0;
+static int16_t          led_hue_deg[2]    = {0, 0};  /* per-LED hue [0,359] */
+static uint8_t          led_bri[2]        = {255, 255}; /* per-LED brightness */
+static volatile int32_t led_pending_steps = 0;
+static struct k_work    led_encoder_work;
+
+/* Integer HSV→RGB.  S=1, V=1.  hue_deg in [0,360). */
+static void hsv_to_rgb(int hue_deg, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+	hue_deg = ((hue_deg % 360) + 360) % 360;
+	int sector = hue_deg / 60;
+	int frac   = (hue_deg % 60) * 255 / 60;
+	int q      = 255 - frac;
+	switch (sector) {
+	case 0: *r = 255;  *g = frac; *b = 0;    break;
+	case 1: *r = q;    *g = 255;  *b = 0;    break;
+	case 2: *r = 0;    *g = 255;  *b = frac; break;
+	case 3: *r = 0;    *g = q;    *b = 255;  break;
+	case 4: *r = frac; *g = 0;    *b = 255;  break;
+	default:*r = 255;  *g = 0;    *b = q;    break;
+	}
+}
+
 static void qdec_idle_expiry(struct k_timer *timer)
 {
 	ARG_UNUSED(timer);
@@ -145,19 +177,79 @@ static void qdec_trigger(struct k_work *item)
 	qdec_send_pending = false;
 }
 
+/* Called from gl_button_logic.c on each BTN4 press.
+ * Cycles encoder_mode 0→1→2→3→0 and turns on the active LED. */
+void encoder_mode_cycle(void)
+{
+	encoder_mode = (encoder_mode + 1) % 4;
+	static const char *const mode_names[] = {
+		"LED1 color", "LED1 brightness",
+		"LED2 color", "LED2 brightness",
+	};
+	printk("Encoder mode: %s\n", mode_names[encoder_mode]);
+	uint16_t node = (encoder_mode < 2) ? LED_STRIP_NODE_1 : LED_STRIP_NODE_2;
+	on_off_led_strip(node, LED_ON);
+}
+
+/* System-workqueue handler — applies accumulated encoder steps to the
+ * active LED's hue or brightness and refreshes the hardware. */
+static void led_encoder_apply(struct k_work *item)
+{
+	ARG_UNUSED(item);
+
+	unsigned int key = irq_lock();
+	int32_t steps    = led_pending_steps;
+	led_pending_steps = 0;
+	irq_unlock(key);
+
+	if (steps == 0) {
+		return;
+	}
+
+	uint8_t  led_idx = (encoder_mode < 2) ? 0 : 1;
+	uint16_t node    = (encoder_mode < 2) ? LED_STRIP_NODE_1 : LED_STRIP_NODE_2;
+	bool     is_hue  = (encoder_mode == 0 || encoder_mode == 2);
+
+	if (is_hue) {
+		/* QDEC degrees map 1:1 to hue; one full rotation = full rainbow */
+		int32_t new_hue = (int32_t)led_hue_deg[led_idx] + steps;
+		new_hue = ((new_hue % 360) + 360) % 360;
+		led_hue_deg[led_idx] = (int16_t)new_hue;
+
+		uint8_t r, g, b;
+		hsv_to_rgb(led_hue_deg[led_idx], &r, &g, &b);
+		struct led_rgb color = { .r = r, .g = g, .b = b };
+		update_led_strip_rgb(node, &color);
+	} else {
+		/* one full rotation (360°) = full brightness range 1-255 */
+		int32_t delta   = steps * 254 / 360;
+		int32_t new_bri = (int32_t)led_bri[led_idx] + delta;
+		if (new_bri < 1)   { new_bri = 1; }
+		if (new_bri > 255) { new_bri = 255; }
+		led_bri[led_idx] = (uint8_t)new_bri;
+		set_led_strip_brightness(node, led_bri[led_idx]);
+	}
+
+	on_off_led_strip(node, LED_ON);
+}
+
 void encoder_callback(const struct device *dev, const struct sensor_trigger *trigger)
 {
 	if (qdec_send_pending) {
-		return; /* locked out while send is in progress */
+		return;
 	}
 
 	struct sensor_value sv;
 	sensor_sample_fetch(dev);
 	sensor_channel_get(dev, SENSOR_CHAN_ROTATION, &sv);
 
-	qdec_accum += sv.val1;
+	unsigned int key = irq_lock();
+	led_pending_steps += sv.val1;
+	qdec_accum        += sv.val1;
+	irq_unlock(key);
 
-	/* Restart idle timer; fires QDEC_IDLE_MS after the last rotation step. */
+	k_work_submit(&led_encoder_work);
+	/* Restart idle timer — fires QDEC_IDLE_MS after the last step. */
 	k_timer_start(&qdec_idle_timer, K_MSEC(QDEC_IDLE_MS), K_NO_WAIT);
 }
 
@@ -244,6 +336,7 @@ void main(void)
 	gl_led_strip_init();
 
 	k_work_init(&qdec_work, qdec_trigger);
+	k_work_init(&led_encoder_work, led_encoder_apply);
 	k_timer_init(&qdec_idle_timer, qdec_idle_expiry, NULL);
 	gl_qdec_init(encoder_callback);
 
