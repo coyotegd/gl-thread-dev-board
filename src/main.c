@@ -178,17 +178,32 @@ static void qdec_trigger(struct k_work *item)
 }
 
 /* Called from gl_button_logic.c on each BTN4 press.
- * Cycles encoder_mode 0→1→2→3→0 and turns on the active LED. */
+ * Cycles encoder_mode 0→1→2→3→4(off)→0 and controls the active LED.
+ * Mode 4 turns both LEDs off.  Re-entering mode 0 resets both brightness
+ * to 50% so the user gets a clean start after powering back on. */
 void encoder_mode_cycle(void)
 {
-	encoder_mode = (encoder_mode + 1) % 4;
+	encoder_mode = (encoder_mode + 1) % 5;
 	static const char *const mode_names[] = {
 		"LED1 color", "LED1 brightness",
 		"LED2 color", "LED2 brightness",
+		"all off",
 	};
 	printk("Encoder mode: %s\n", mode_names[encoder_mode]);
-	uint16_t node = (encoder_mode < 2) ? LED_STRIP_NODE_1 : LED_STRIP_NODE_2;
-	on_off_led_strip(node, LED_ON);
+	if (encoder_mode == 4) {
+		on_off_led_strip(LED_STRIP_NODE_1, LED_OFF);
+		on_off_led_strip(LED_STRIP_NODE_2, LED_OFF);
+	} else {
+		if (encoder_mode == 0) {
+			/* Returning from OFF — set both strips to 50% */
+			led_bri[0] = 127;
+			led_bri[1] = 127;
+			set_led_strip_brightness(LED_STRIP_NODE_1, 127);
+			set_led_strip_brightness(LED_STRIP_NODE_2, 127);
+		}
+		uint16_t node = (encoder_mode < 2) ? LED_STRIP_NODE_1 : LED_STRIP_NODE_2;
+		on_off_led_strip(node, LED_ON);
+	}
 }
 
 /* System-workqueue handler — applies accumulated encoder steps to the
@@ -204,6 +219,10 @@ static void led_encoder_apply(struct k_work *item)
 
 	if (steps == 0) {
 		return;
+	}
+
+	if (encoder_mode == 4) {
+		return; /* all-off mode — ignore rotation */
 	}
 
 	uint8_t  led_idx = (encoder_mode < 2) ? 0 : 1;
@@ -246,6 +265,13 @@ void encoder_callback(const struct device *dev, const struct sensor_trigger *tri
 	unsigned int key = irq_lock();
 	led_pending_steps += sv.val1;
 	qdec_accum        += sv.val1;
+	/* Anti-windup: once at a brightness limit, stop accumulating steps
+	 * in the same direction so the first step the other way takes effect. */
+	if (encoder_mode == 1 || encoder_mode == 3) {
+		uint8_t idx = (encoder_mode == 1) ? 0 : 1;
+		if (led_bri[idx] >= 255 && led_pending_steps > 0) { led_pending_steps = 0; }
+		if (led_bri[idx] <= 1   && led_pending_steps < 0) { led_pending_steps = 0; }
+	}
 	irq_unlock(key);
 
 	k_work_submit(&led_encoder_work);
