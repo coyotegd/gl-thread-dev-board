@@ -554,6 +554,7 @@ static void do_report_status_request(struct k_work *item)
 	gl_json_add_number(data_obj, "humidity", gl_sensor_get_humi());
 	gl_json_add_number(data_obj, "light", gl_sensor_get_light());
 	gl_json_add_number(data_obj, "press", gl_sensor_get_press());
+	gl_json_add_number(data_obj, "temp_spl0601", gl_sensor_get_temp_spl0601());
 	gl_json_add_number(data_obj, "battery_level", gl_battery_get_level());
 	gl_json_add_obj(root_obj, "data", data_obj);
 	payload = cJSON_PrintUnformatted(root_obj);

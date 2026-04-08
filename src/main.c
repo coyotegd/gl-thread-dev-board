@@ -113,51 +113,52 @@ static void on_mtd_mode_toggle(uint32_t med)
 	dk_set_led(LED2, med);
 }
 
-static struct k_work qdec_work;
-#define DEF_ROTATION	(24)
-static double rotation = 0;
+static struct k_work  qdec_work;
+static struct k_timer qdec_idle_timer;
+static volatile int32_t qdec_accum       = 0;
+static volatile bool    qdec_send_pending = false;
+
+#define QDEC_IDLE_MS 1000
+
+static void qdec_idle_expiry(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+	k_work_submit(&qdec_work);
+}
+
 static void qdec_trigger(struct k_work *item)
 {
 	ARG_UNUSED(item);
 
-	if(rotation == 0)
-	{
-		return;
+	/* Atomically capture and clear the accumulator. */
+	unsigned int key = irq_lock();
+	int32_t total    = qdec_accum;
+	qdec_accum       = 0;
+	qdec_send_pending = true;
+	irq_unlock(key);
+
+	if (total != 0) {
+		double val = (double)total;
+		send_trigger_event_request(QDEC_ROTATE_TRIGGER, "qdec_0", (void *)&val);
 	}
 
-	static double tmp_rotation = 0;
-	tmp_rotation = rotation;
-	rotation = 0;
-	send_trigger_event_request(QDEC_ROTATE_TRIGGER, "qdec_0", (void*)&tmp_rotation);
-
+	qdec_send_pending = false;
 }
+
 void encoder_callback(const struct device *dev, const struct sensor_trigger *trigger)
 {
-	struct sensor_value val;
+	if (qdec_send_pending) {
+		return; /* locked out while send is in progress */
+	}
 
+	struct sensor_value sv;
 	sensor_sample_fetch(dev);
-	sensor_channel_get(dev, SENSOR_CHAN_ROTATION, &val);
+	sensor_channel_get(dev, SENSOR_CHAN_ROTATION, &sv);
 
-	printk("current %d.%d\r\n", val.val1, val.val2);
+	qdec_accum += sv.val1;
 
-	if(val.val1 > 0)
-	{
-		if(rotation < 0)
-		{
-			rotation = 0;
-		}
-	}else{
-		if(rotation > 0)
-		{
-			rotation = 0;
-		}
-	}
-	rotation += val.val1;
-
-	if(abs(rotation) >= DEF_ROTATION)
-	{
-		k_work_submit(&qdec_work);
-	}
+	/* Restart idle timer; fires QDEC_IDLE_MS after the last rotation step. */
+	k_timer_start(&qdec_idle_timer, K_MSEC(QDEC_IDLE_MS), K_NO_WAIT);
 }
 
 void print_version(void)
@@ -243,6 +244,7 @@ void main(void)
 	gl_led_strip_init();
 
 	k_work_init(&qdec_work, qdec_trigger);
+	k_timer_init(&qdec_idle_timer, qdec_idle_expiry, NULL);
 	gl_qdec_init(encoder_callback);
 
 	return ;
