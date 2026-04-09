@@ -18,6 +18,16 @@
       - [buiding](#buiding-1)
       - [Flashing](#2flashing-1)
       - [test](#test-1)
+  - [Adding a New Board to Home Assistant](#adding-a-new-board-to-home-assistant)
+    - [Step 1: Flash Updated Firmware via UART DFU](#step-1-flash-updated-firmware-via-uart-dfu)
+    - [Step 2: Join the Thread Network](#step-2-join-the-thread-network)
+    - [Step 3: Update Firmware via Thread OTA](#step-3-update-firmware-via-thread-ota)
+    - [Step 4: Add the Board to Home Assistant](#step-4-add-the-board-to-home-assistant)
+  - [Recovery: Restoring Boards After GL-S200 OTA Overwrote Custom Firmware](#recovery-restoring-boards-after-gl-s200-ota-overwrote-custom-firmware)
+    - [What Happened](#what-happened)
+    - [Permanent Fix: Disable the S200 OTA Service](#permanent-fix-disable-the-s200-ota-service)
+    - [Recovery Procedure: Re-flash Custom Firmware via USB (Ubuntu)](#recovery-procedure-re-flash-custom-firmware-via-usb-ubuntu)
+    - [Commissioning on the Thread Network](#commissioning-on-the-thread-network)
 
 
 # GL Thread Dev Board
@@ -347,6 +357,228 @@ Done
 ```
 
 
+
+---
+
+## Adding a New Board to Home Assistant
+
+Use the included [provision_tdb.py](provision_tdb.py) script to automate the full process.
+It handles firmware flashing, Thread OTA, and Home Assistant registration end-to-end.
+The only manual step is **pressing Button2** on the board to trigger Thread joining.
+
+```bash
+# One-time setup — set credentials as env vars (avoids secrets in process list)
+export S200_CRYPT_PW='$1$6J.vdguZ$tTwXvmrqY.tYbME5DZpGw/'   # from docker-compose.yml (unescape $$ → $)
+export HA_TOKEN='eyJ...'   # HA → Settings → Profile → Long-Lived Access Tokens
+
+python3 provision_tdb.py \
+    --firmware /path/to/GL-Thread-Dev-Board-FTD-OTA-vX.X.X.bin \
+    --port /dev/ttyUSB0 \
+    --name "TDB 3"
+```
+
+The manual steps below describe what the script does if you need to run them individually.
+
+### Step 1: Flash Updated Firmware via UART DFU
+
+The board has MCUboot, so new firmware can be pushed over USB before joining Thread.
+
+1. Connect the board to a Windows PC via USB (Type-C).
+2. Note the COM port (Device Manager → Ports).
+3. Download the latest `.bin` release from the [Releases](../release) folder.
+4. Open CMD in the `uart_dfu/windows/` directory and run:
+
+```shell
+# 1. Verify current version
+mcumgr.exe --conntype serial --connstring=COM3,baud=460800 image list
+
+# 2. Upload new firmware
+mcumgr.exe --conntype serial --connstring=COM3,baud=460800 image upload GL-Thread-Dev-Board-FTD-OTA-vX.X.X.bin
+
+# 3. Confirm upload and note the hash of slot-1
+mcumgr.exe --conntype serial --connstring=COM3,baud=460800 image list
+
+# 4. Mark new firmware for next boot (replace <HASH> with the slot-1 hash)
+mcumgr.exe --conntype serial --connstring=COM3,baud=460800 image test <HASH>
+
+# 5. Reboot into new firmware
+mcumgr.exe --conntype serial --connstring=COM3,baud=460800 reset
+```
+
+Replace `COM3` with your actual port number. See [uart_dfu/README.md](uart_dfu/README.md) for details and screenshots.
+
+### Step 2: Join the Thread Network
+
+1. Power on the board within range of the GL-S200 gateway.
+2. **Short press Button2** — LED2 (green) starts blinking, indicating the board is scanning for the S200 Thread network.
+3. Wait for **LED2 to stay solid green** — the board has successfully joined.
+4. Confirm in the GL-S200 web UI under **Thread → Devices** that the new board is listed.
+
+### Step 3: Update Firmware via Thread OTA
+
+With the board on Thread, push the final firmware over-the-air from the S200 using `mcumgr` over UDP.
+
+1. SSH into the S200: `ssh root@<S200_IP>`
+2. Find the board's Thread IPv6 address in the S200 web UI, or run:
+
+```shell
+root@GL-S200:~# ubus call otbr-gateway get_devices '{}'
+```
+
+3. Upload and activate the firmware:
+
+```shell
+# Upload firmware (replace [IPv6] and filename)
+root@GL-S200:~# mcumgr --conntype udp --connstring=[fd11:22:0:0:xxxx:xxxx:xxxx:xxxx]:1337 image upload /tmp/GL-Thread-Dev-Board-FTD-OTA-vX.X.X.bin
+
+# Check slot-1 hash after upload
+root@GL-S200:~# mcumgr --conntype udp --connstring=[fd11:22:0:0:xxxx:xxxx:xxxx:xxxx]:1337 image list
+
+# Confirm new image (replace <HASH> with slot-1 hash)
+root@GL-S200:~# mcumgr --conntype udp --connstring=[fd11:22:0:0:xxxx:xxxx:xxxx:xxxx]:1337 image confirm <HASH>
+
+# Reboot
+root@GL-S200:~# mcumgr --conntype udp --connstring=[fd11:22:0:0:xxxx:xxxx:xxxx:xxxx]:1337 reset
+```
+
+### Step 4: Add the Board to Home Assistant
+
+The `s200-bridge` service automatically discovers all boards joined to the S200. No manual device registration is needed.
+
+1. In Home Assistant go to **Settings → Devices & Services**.
+2. Find **S200 TDB Boards** and click **Configure**.
+3. Select **Add Device**.
+4. Choose the new board from the dropdown (auto-discovered from the S200).
+5. Optionally set a friendly name and a webhook ID for PIR motion events.
+6. Click **Submit** — sensor entities (temperature, humidity, pressure, PIR, etc.) and the RGB LED light entity will be created automatically.
+
+---
+
+## Recovery: Restoring Boards After GL-S200 OTA Overwrote Custom Firmware
+
+### What Happened
+
+On April 9, 2026 all three TDB boards stopped working. The root cause was **not** corrupted firmware or hardware failure. The GL-S200 has a built-in OTA auto-upgrade service (`gl_dev_board_ota`) that silently watched for boards joining the Thread network and automatically pushed GL-iNet's stock firmware (v2.1.1) over-the-air, overwriting our custom v1.3.0 firmware on every board.
+
+**v2.1.1 is GL-iNet's official firmware — it has no relation to our version numbering.** Our firmware tops out at v1.3.0. If you see v2.x on a board it has been overwritten by the S200 OTA service.
+
+### Permanent Fix: Disable the S200 OTA Service
+
+SSH into the S200 and stop the auto-upgrade service. This must be done before connecting any board to the Thread network:
+
+```bash
+ssh root@<S200_IP>
+/etc/init.d/gl_dev_board_ota stop
+/etc/init.d/gl_dev_board_ota disable
+```
+
+Verify it is gone:
+```bash
+ps | grep ota | grep -v grep
+# should return nothing
+```
+
+### Recovery Procedure: Re-flash Custom Firmware via USB (Ubuntu)
+
+Use this procedure any time a board is on the wrong firmware and needs to be restored. You need a Linux machine with USB and the `mcumgr` binary from `uart_dfu/mcumgr/ubuntu22.04/mcumgr`.
+
+#### Prerequisites on Ubuntu
+
+```bash
+# Stop ModemManager — it grabs USB serial ports and blocks mcumgr
+sudo systemctl stop ModemManager
+sudo systemctl disable ModemManager
+
+# Copy mcumgr from NAS (use -O flag — modern Ubuntu scp uses SFTP by default which the NAS blocks)
+scp -O NAS2743@192.168.1.211:/volume1/repos/gl-thread-dev-board/uart_dfu/mcumgr/ubuntu22.04/mcumgr ~/
+scp -O NAS2743@192.168.1.211:/volume1/repos/gl-thread-dev-board/app_update_v1.3.0.bin ~/
+chmod +x ~/mcumgr
+```
+
+> **Note:** The NAS ssh server uses `ForceCommand` which intercepts connections.
+> Always use `scp -O` (legacy SCP mode) when copying files from the NAS — modern Ubuntu's scp uses SFTP by default which the NAS does not support.
+
+#### Flash Each Board
+
+Plug in one board at a time via USB-C. The port is typically `/dev/ttyUSB0`.
+
+Add `-t 10 -r 5` flags to all mcumgr commands — the board's CoAP/OpenThread log output can corrupt SMP frames and these flags add retries to work around it.
+
+```bash
+# 1. Check what is currently on the board
+~/mcumgr --conntype serial --connstring=/dev/ttyUSB0,baud=460800 -t 10 -r 5 image list
+```
+
+**If slot 1 already contains v1.3.0** (hash `383bba481c5e2b47cdf25ba769f4ee0822201ae8dfad9726cb05a2dff58f067b`), skip the upload step and go straight to test+reset:
+
+```bash
+# Mark v1.3.0 for next boot and reboot
+~/mcumgr --conntype serial --connstring=/dev/ttyUSB0,baud=460800 -t 10 -r 5 image test 383bba481c5e2b47cdf25ba769f4ee0822201ae8dfad9726cb05a2dff58f067b
+~/mcumgr --conntype serial --connstring=/dev/ttyUSB0,baud=460800 -t 10 -r 5 reset
+```
+
+**If slot 1 does not contain v1.3.0**, upload it first:
+
+```bash
+# Upload (~60 seconds)
+~/mcumgr --conntype serial --connstring=/dev/ttyUSB0,baud=460800 -t 10 -r 5 image upload ~/app_update_v1.3.0.bin
+
+# Get the slot 1 hash
+~/mcumgr --conntype serial --connstring=/dev/ttyUSB0,baud=460800 -t 10 -r 5 image list
+
+# Mark for next boot and reboot
+~/mcumgr --conntype serial --connstring=/dev/ttyUSB0,baud=460800 -t 10 -r 5 image test 383bba481c5e2b47cdf25ba769f4ee0822201ae8dfad9726cb05a2dff58f067b
+~/mcumgr --conntype serial --connstring=/dev/ttyUSB0,baud=460800 -t 10 -r 5 reset
+```
+
+After ~15 seconds confirm slot 0 shows `version: 1.3.0  flags: active confirmed`:
+
+```bash
+~/mcumgr --conntype serial --connstring=/dev/ttyUSB0,baud=460800 -t 10 -r 5 image list
+```
+
+Repeat for each board one at a time.
+
+#### Troubleshooting: mcumgr Returns "NMP timeout"
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Error: device or resource busy` | `screen`, `picocom`, or ModemManager holding the port | `killall screen picocom`; `sudo systemctl stop ModemManager` |
+| `NMP timeout` at 460800 baud, LED solid green | App running but log output corrupting SMP frames | Add `-t 10 -r 5` flags |
+| `NMP timeout` at 115200 baud, LED blinking | MCUboot recovery window (~3s) expired before command ran | Re-do SW1+Reset and run command immediately |
+| Port not found | Board not yet enumerated | Wait 5 seconds after plugging in, then `ls /dev/ttyUSB*` |
+
+**MCUboot serial recovery mode** (last resort if app is completely dead):
+1. Hold **SW1** (left button, labeled SW1 on the board — this is `mcuboot-button0` in DTS)
+2. While holding SW1, press and release **Reset**
+3. Keep holding SW1 for 2 seconds — LED will blink
+4. Immediately run mcumgr at **115200** baud (MCUboot uses 115200, not 460800):
+
+```bash
+~/mcumgr --conntype serial --connstring=/dev/ttyUSB0,baud=115200 image list
+```
+
+### Commissioning on the Thread Network
+
+The firmware uses **standard OpenThread Joiner protocol** with PSKD `AAAAAA` and `CONFIG_OPENTHREAD_JOINER_AUTOSTART=y` — the board joins automatically with no button press required.
+
+The **GL-S200 web UI commissioning interface does not work** with our firmware. It uses a proprietary GL-iNet flow. Always use `ot-ctl` on the S200 CLI instead:
+
+```bash
+ssh root@<S200_IP>
+ot-ctl commissioner start
+ot-ctl commissioner joiner add * AAAAAA
+```
+
+The board will join within 30 seconds. LED2 goes solid green when on the network.
+
+To find a board's Thread IPv6 address after joining (needed for OTA updates):
+
+```bash
+# Ping the Thread mesh-local all-nodes multicast to populate the neighbour table
+ping6 -c 2 -I wpan0 ff03::1
+# Board's mesh-local address (fd...) will appear in the ping replies
+```
 
 
 
