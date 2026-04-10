@@ -28,6 +28,10 @@
     - [Permanent Fix: Disable the S200 OTA Service](#permanent-fix-disable-the-s200-ota-service)
     - [Recovery Procedure: Re-flash Custom Firmware via USB (Ubuntu)](#recovery-procedure-re-flash-custom-firmware-via-usb-ubuntu)
     - [Commissioning on the Thread Network](#commissioning-on-the-thread-network)
+  - [NAS Infrastructure: s200-bridge](#nas-infrastructure-s200-bridge)
+    - [Architecture](#architecture)
+    - [SSH Security](#ssh-security)
+    - [Thread Mesh IPv6 Route](#thread-mesh-ipv6-route)
 
 
 # GL Thread Dev Board
@@ -580,5 +584,77 @@ ping6 -c 2 -I wpan0 ff03::1
 # Board's mesh-local address (fd...) will appear in the ping replies
 ```
 
+---
 
+## NAS Infrastructure: s200-bridge
+
+### Architecture
+
+The `s200-bridge` Docker container (on the NAS) connects Home Assistant to the TDB boards. It has two communication paths:
+
+```
+Home Assistant ──WebSocket (ws://localhost:8765)──► s200-bridge
+                                                         │
+                               ┌─────────────────────────┤
+                               │                         │
+                        HTTPS JSON-RPC            SSH → coap_cli
+                   (sensor polling, discovery)   (LED commands)
+                               │                         │
+                          GL-S200 (<S200_IP>) ──────────┘
+                               │
+                          Thread mesh
+                               │
+                    TDB 1 / TDB 2 / TDB 3
+```
+
+- **Sensor data** is polled via the S200's HTTPS JSON-RPC API (`otbr-gateway.get_device_status`) every 3 seconds — no SSH needed.
+- **LED control** requires SSH into the S200 to run `coap_cli` locally, because the S200's OpenThread Border Router does not forward CoAP packets from external LAN hosts into the Thread mesh. Direct IPv6 CoAP from the NAS times out.
+
+Config files:
+- Bridge script: `/volume1/docker/configs/s200-bridge/s200_bridge.py`
+- Docker Compose: `/volume1/docker/compose/docker-compose.yml`
+- HA integration: `/volume1/docker/configs/homeassistant/custom_components/s200_tdb/`
+
+### SSH Security
+
+The bridge SSHes **outbound** from the NAS to `root@<S200_IP>` — this is entirely LAN-internal. The NAS's own inbound SSH (port 22) is unrelated.
+
+SSH key: `/volume1/docker/configs/s200-bridge/ssh/id_ed25519` (mounted read-only into the container).
+
+**Firewall rule (applied on GL-S200):** SSH access on the S200 is restricted to only accept connections from the NAS IP. Configure via the S200 web UI under `System > Firewall`, or via the CLI:
+
+```bash
+ssh root@<S200_IP>
+uci add firewall rule
+uci set firewall.@rule[-1].name='Allow SSH from NAS only'
+uci set firewall.@rule[-1].src='lan'
+uci set firewall.@rule[-1].dest_port='22'
+uci set firewall.@rule[-1].proto='tcp'
+uci set firewall.@rule[-1].src_ip='<NAS_IP>'
+uci set firewall.@rule[-1].target='ACCEPT'
+# Block all other SSH on LAN
+uci add firewall rule
+uci set firewall.@rule[-1].name='Block SSH from others'
+uci set firewall.@rule[-1].src='lan'
+uci set firewall.@rule[-1].dest_port='22'
+uci set firewall.@rule[-1].proto='tcp'
+uci set firewall.@rule[-1].target='REJECT'
+uci commit firewall
+/etc/init.d/firewall restart
+```
+
+### Thread Mesh IPv6 Route
+
+A persistent IPv6 route for the Thread mesh prefix is installed on the NAS so tooling can reach board addresses for diagnostics. This does **not** enable direct CoAP (see Architecture above) but allows `ping6` and other IPv6 tools to resolve board addresses.
+
+- Thread mesh prefix: `<THREAD_MESH_PREFIX>/64` (check S200 → OpenThread → Mesh Local Prefix)
+- Next-hop (S200 link-local): `<S200_LINK_LOCAL>` via `eth0` (find with `ip -6 neigh show dev eth0 | grep <S200_MAC>`)
+- Persisted by: `/etc/systemd/system/thread-route.service` (enabled, starts after `network-online.target`)
+
+To verify the route is active:
+
+```bash
+ip -6 route get <THREAD_MESH_PREFIX>::1
+# Should show: via <S200_LINK_LOCAL> dev eth0
+```
 
