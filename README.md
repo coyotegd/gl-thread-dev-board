@@ -453,8 +453,10 @@ The `s200-bridge` service automatically discovers all boards joined to the S200.
 2. Find **S200 TDB Boards** and click **Configure**.
 3. Select **Add Device**.
 4. Choose the new board from the dropdown (auto-discovered from the S200).
-5. Optionally set a friendly name and a webhook ID for PIR motion events.
+5. Optionally set a friendly name. The webhook ID for PIR motion is generated automatically as `tdb-{dev_id[-8:]}-pir-motion` — leave it at the default unless you have a specific reason to change it.
 6. Click **Submit** — sensor entities (temperature, humidity, pressure, PIR, etc.) and the RGB LED light entity will be created automatically.
+
+The bridge will auto-create the corresponding S200 `gl_dev_automation` PIR webhook entry within the next discovery cycle (~60 s). No manual S200 configuration is needed.
 
 ---
 
@@ -657,4 +659,34 @@ To verify the route is active:
 ip -6 route get <THREAD_MESH_PREFIX>::1
 # Should show: via <S200_LINK_LOCAL> dev eth0
 ```
+
+### PIR Motion — How It Works
+
+PIR (motion detection) events are delivered as webhooks from the S200 to Home Assistant:
+
+```
+TDB board PIR trigger
+  → firmware calls send_trigger_event_request(INFRARED_SENSOR_TRIGGER)
+  → CoAP PUT to {S200}/trigger
+  → S200 gl_dev_automation matches trigger by dev_id
+  → HTTP POST to HA webhook: /api/webhook/tdb-{dev_id[-8:]}-pir-motion
+  → HA coordinator sets motion = True (auto-resets to False after 30 s)
+```
+
+The `gl_dev_automation` entries on the S200 are **managed automatically** by the bridge. On every discovery cycle the bridge:
+
+1. Queries `gl_dev_automation get_list` from the S200.
+2. For each known device, checks whether a webhook automation exists pointing to the correct HA URL.
+3. Creates any missing automation via `gl_dev_automation add`.
+4. Removes stale or duplicate entries.
+
+The only manual step when adding a new board is registering it in the HA integration (step 4 above) so that HA creates its webhook listener. Everything on the S200 side is self-healing.
+
+To inspect S200 automations manually:
+
+```bash
+ssh root@<S200_IP> "ubus call gl_dev_automation get_list '{}'"
+```
+
+The `HA_WEBHOOK_BASE` environment variable in `docker-compose.yml` controls the base URL the bridge uses when building webhook URLs (e.g. `http://<NAS_IP>:8123`). If HA moves to a different address or port, update this variable and restart the bridge — it will reconcile the S200 automations on the next discovery cycle.
 
